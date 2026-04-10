@@ -220,6 +220,9 @@ type Engine struct {
 	// /web command callbacks
 	webSetupFunc  func() (port int, token string, needRestart bool, err error)
 	webStatusFunc func() (url string)
+
+	// Project routing
+	router *EngineRouter
 }
 
 // workspaceInitFlow tracks a channel that is being onboarded to a workspace.
@@ -367,6 +370,21 @@ func (e *Engine) SetMultiWorkspace(baseDir, bindingStorePath string) {
 	e.workspacePool = newWorkspacePool(15 * time.Minute)
 	e.initFlows = make(map[string]*workspaceInitFlow)
 	go e.runIdleReaper()
+}
+
+// SetRouter sets the EngineRouter for cross-project message routing.
+func (e *Engine) SetRouter(r *EngineRouter) {
+	e.router = r
+}
+
+// messageHandler returns the MessageHandler that should be passed to Platform.Start.
+// When a router is set, it routes messages across projects; otherwise it falls back
+// to the engine's own handleMessage.
+func (e *Engine) messageHandler() MessageHandler {
+	if e.router != nil {
+		return e.router.HandleMessage
+	}
+	return e.handleMessage
 }
 
 func (e *Engine) runIdleReaper() {
@@ -1095,7 +1113,7 @@ func (e *Engine) Start() error {
 		if async, ok := p.(AsyncRecoverablePlatform); ok {
 			async.SetLifecycleHandler(e)
 		}
-		if err := p.Start(e.handleMessage); err != nil {
+		if err := p.Start(e.messageHandler()); err != nil {
 			slog.Warn("platform start failed", "project", e.name, "platform", p.Name(), "error", err)
 			startErrs = append(startErrs, fmt.Errorf("[%s] start platform %s: %w", e.name, p.Name(), err))
 			continue
@@ -2973,6 +2991,7 @@ var builtinCommands = []struct {
 	{[]string{"whoami", "myid"}, "whoami"},
 	{[]string{"web"}, "web"},
 	{[]string{"diff"}, "diff"},
+	{[]string{"project", "proj"}, "project"},
 }
 
 // isBtwCommand checks if a trimmed message starts with a /btw command.
@@ -3173,6 +3192,8 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 		e.cmdWhoami(p, msg)
 	case "web":
 		e.cmdWeb(p, msg, args)
+	case "project":
+		e.cmdProject(p, msg, args)
 	default:
 		if custom, ok := e.commands.Resolve(cmd); ok {
 			if disabledCmds[strings.ToLower(custom.Name)] {
@@ -4050,6 +4071,207 @@ func (e *Engine) cmdDir(p Platform, msg *Message, args []string) {
 		return
 	}
 	e.reply(p, msg.ReplyCtx, successMsg)
+}
+
+// cmdProject handles the /project command for cross-project management.
+// Usage:
+//
+//	/project            — show current project and list available projects
+//	/project list       — list all projects
+//	/project switch <name> — switch current session to another project
+//	/project add <name> <work_dir> [agent_type] — add a new project
+//	/project remove <name>  — remove a project
+func (e *Engine) cmdProject(p Platform, msg *Message, args []string) {
+	if e.router == nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgProjectNotAvailable))
+		return
+	}
+
+	subCmd := ""
+	if len(args) > 0 {
+		subCmd = strings.ToLower(strings.TrimSpace(args[0]))
+	}
+
+	switch subCmd {
+	case "", "list":
+		e.cmdProjectList(p, msg)
+	case "switch":
+		e.cmdProjectSwitch(p, msg, args[1:])
+	case "add":
+		if !e.isAdmin(msg.UserID) {
+			e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgAdminRequired), "/project add"))
+			return
+		}
+		e.cmdProjectAdd(p, msg, args[1:])
+	case "remove", "rm":
+		if !e.isAdmin(msg.UserID) {
+			e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgAdminRequired), "/project remove"))
+			return
+		}
+		e.cmdProjectRemove(p, msg, args[1:])
+	default:
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgProjectUsage))
+	}
+}
+
+func (e *Engine) cmdProjectList(p Platform, msg *Message) {
+	projects := e.router.ListProjects()
+	currentProject := e.name
+	boundProject := e.router.GetBinding(msg.SessionKey)
+	if boundProject != "" {
+		currentProject = boundProject
+	}
+
+	var sb strings.Builder
+	sb.WriteString(e.i18n.Tf(MsgProjectCurrent, currentProject))
+	sb.WriteString("\n\n")
+	sb.WriteString(e.i18n.T(MsgProjectListTitle))
+	for _, name := range projects {
+		marker := "◻"
+		if name == currentProject {
+			marker = "▶"
+		}
+		sb.WriteString(fmt.Sprintf("\n  %s %s", marker, name))
+	}
+	sb.WriteString("\n\n")
+	sb.WriteString(e.i18n.T(MsgProjectSwitchHint))
+	e.reply(p, msg.ReplyCtx, sb.String())
+}
+
+func (e *Engine) cmdProjectSwitch(p Platform, msg *Message, args []string) {
+	if len(args) == 0 {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgProjectSwitchUsage))
+		return
+	}
+	targetName := strings.TrimSpace(args[0])
+
+	targetEngine := e.router.GetEngine(targetName)
+	if targetEngine == nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgProjectNotFound, targetName))
+		return
+	}
+
+	if err := e.router.Bind(msg.SessionKey, targetName); err != nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgProjectNotFound, targetName))
+		return
+	}
+
+	// Clean up interactive state on the current engine
+	_, sessions, interactiveKey, err := e.commandContext(p, msg)
+	if err == nil {
+		e.cleanupInteractiveState(interactiveKey)
+		s := sessions.GetOrCreateActive(msg.SessionKey)
+		s.SetAgentSessionID("", "")
+		s.ClearHistory()
+		sessions.Save()
+	}
+
+	// Get the target engine's work_dir for the success message
+	var targetDir string
+	if switcher, ok := targetEngine.agent.(WorkDirSwitcher); ok {
+		targetDir = switcher.GetWorkDir()
+	}
+
+	successMsg := e.i18n.Tf(MsgProjectSwitched, targetName)
+	if targetDir != "" {
+		successMsg += "\n" + e.i18n.Tf(MsgDirCurrent, targetDir)
+	}
+	e.reply(p, msg.ReplyCtx, successMsg)
+}
+
+func (e *Engine) cmdProjectAdd(p Platform, msg *Message, args []string) {
+	if len(args) < 2 {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgProjectAddUsage))
+		return
+	}
+
+	name := strings.TrimSpace(args[0])
+	workDir := strings.TrimSpace(args[1])
+	agentType := ""
+	if len(args) > 2 {
+		agentType = strings.TrimSpace(args[2])
+	}
+
+	// Expand ~ in workDir
+	if strings.HasPrefix(workDir, "~") {
+		if homeDir, err := os.UserHomeDir(); err == nil {
+			workDir = filepath.Join(homeDir, strings.TrimPrefix(workDir, "~"))
+		}
+	}
+	if absDir, err := filepath.Abs(workDir); err == nil {
+		workDir = absDir
+	}
+
+	// Validate workDir exists
+	info, err := os.Stat(workDir)
+	if err != nil || !info.IsDir() {
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgDirInvalidPath, workDir))
+		return
+	}
+
+	// Check project doesn't already exist
+	if e.router.GetEngine(name) != nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgProjectAlreadyExists, name))
+		return
+	}
+
+	// Default agent type from current engine
+	if agentType == "" {
+		agentType = e.agent.Name()
+	}
+
+	// Inherit platform configs from current project (from config file, not runtime)
+	platformConfigs := make([]PlatformInheritConfig, 0, len(e.platforms))
+	for _, plat := range e.platforms {
+		platformConfigs = append(platformConfigs, PlatformInheritConfig{
+			Type: plat.Name(),
+		})
+	}
+
+	newEngine, err := e.router.CreateEngine(name, workDir, agentType, e.name, platformConfigs)
+	if err != nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgProjectAddFailed, name, err.Error()))
+		return
+	}
+
+	// Auto-switch to the new project
+	_ = e.router.Bind(msg.SessionKey, name)
+
+	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgProjectAdded, name, workDir))
+	slog.Info("project added via /project add", "name", name, "work_dir", workDir, "agent_type", agentType, "added_by", msg.UserID)
+	_ = newEngine // used via router
+}
+
+func (e *Engine) cmdProjectRemove(p Platform, msg *Message, args []string) {
+	if len(args) == 0 {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgProjectRemoveUsage))
+		return
+	}
+	name := strings.TrimSpace(args[0])
+
+	// Prevent removing the project the current session is bound to
+	boundProject := e.router.GetBinding(msg.SessionKey)
+	if boundProject == "" {
+		boundProject = e.name
+	}
+	if name == boundProject {
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgProjectCannotRemoveCurrent, name))
+		return
+	}
+
+	// Prevent removing the last project
+	if len(e.router.ListProjects()) <= 1 {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgProjectCannotRemoveLast))
+		return
+	}
+
+	if err := e.router.DestroyEngine(name); err != nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgProjectNotFound, name))
+		return
+	}
+
+	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgProjectRemoved, name))
+	slog.Info("project removed via /project remove", "name", name, "removed_by", msg.UserID)
 }
 
 // cmdSearch searches sessions by name or message content.
@@ -4956,6 +5178,7 @@ func helpCardGroups() []helpCardGroup {
 				{command: "/bind", action: "cmd:/bind"},
 				{command: "/workspace", action: "cmd:/workspace"},
 				{command: "/dir", action: "nav:/dir"},
+					{command: "/project", action: "cmd:/project"},
 				{command: "/version", action: "nav:/version"},
 				{command: "/upgrade", action: "nav:/upgrade"},
 				{command: "/restart", action: "cmd:/restart"},

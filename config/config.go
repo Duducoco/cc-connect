@@ -2162,6 +2162,31 @@ func AddPlatformToProject(projectName string, platform PlatformConfig, workDir, 
 	return saveConfig(cfg)
 }
 
+// AddProject adds a complete project configuration to the config file.
+func AddProject(proj ProjectConfig) error {
+	configMu.Lock()
+	defer configMu.Unlock()
+	if ConfigPath == "" {
+		return fmt.Errorf("config path not set")
+	}
+	data, err := os.ReadFile(ConfigPath)
+	if err != nil {
+		return fmt.Errorf("read config: %w", err)
+	}
+	cfg := &Config{}
+	if err := toml.Unmarshal(data, cfg); err != nil {
+		return fmt.Errorf("parse config: %w", err)
+	}
+	// Check for duplicate name
+	for _, p := range cfg.Projects {
+		if p.Name == proj.Name {
+			return fmt.Errorf("project %q already exists", proj.Name)
+		}
+	}
+	cfg.Projects = append(cfg.Projects, proj)
+	return saveConfig(cfg)
+}
+
 func writeRawConfig(content string) error {
 	content = formatTOML(content)
 	dir := filepath.Dir(ConfigPath)

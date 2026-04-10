@@ -587,6 +587,20 @@ func main() {
 		effectiveWorkDirs = append(effectiveWorkDirs, effectiveWorkDir)
 	}
 
+	// Create EngineRouter for cross-project message routing
+	engineRouter := core.NewEngineRouter(cfg.DataDir)
+	for i, e := range engines {
+		e.SetRouter(engineRouter)
+		engineRouter.RegisterEngine(cfg.Projects[i].Name, e)
+	}
+	// Wire the Engine factory for dynamic project creation
+	engineRouter.SetFactory(func(projectName, workDir, agentType, sourceProjectName string, platformConfigs []core.PlatformInheritConfig) (*core.Engine, error) {
+		return createEngineForProject(cfg, projectName, workDir, agentType, sourceProjectName, platformConfigs)
+	})
+	engineRouter.SetProjectRemoveFunc(func(name string) error {
+		return config.RemoveProject(name)
+	})
+
 	// Start cron scheduler
 	cronStore, err := core.NewCronStore(cfg.DataDir)
 	if err != nil {
@@ -1423,4 +1437,182 @@ func derefInt(v *int) int {
 		return 0
 	}
 	return *v
+}
+
+// createEngineForProject creates a new Engine for a dynamically added project.
+// sourceProjectName is the project that triggered the creation (settings are inherited from it).
+func findProjectConfig(cfg *config.Config, name string) *config.ProjectConfig {
+	for i := range cfg.Projects {
+		if cfg.Projects[i].Name == name {
+			return &cfg.Projects[i]
+		}
+	}
+	return nil
+}
+
+func createEngineForProject(cfg *config.Config, projectName, workDir, agentType, sourceProjectName string, platformConfigs []core.PlatformInheritConfig) (*core.Engine, error) {
+	// Build a synthetic ProjectConfig and save it to the config file
+	projConfig := config.ProjectConfig{
+		Name: projectName,
+		Agent: config.AgentConfig{
+			Type:    agentType,
+			Options: map[string]any{"work_dir": workDir},
+		},
+	}
+
+	// Inherit settings from the source project (the project that triggered /project add)
+	sourceProj := findProjectConfig(cfg, sourceProjectName)
+	if sourceProj == nil && len(cfg.Projects) > 0 {
+		sourceProj = &cfg.Projects[0] // fallback to first project
+	}
+	if sourceProj != nil {
+		// Inherit admin_from
+		projConfig.AdminFrom = sourceProj.AdminFrom
+
+		// Inherit provider settings
+		projConfig.Agent.Providers = sourceProj.Agent.Providers
+		if provider, ok := sourceProj.Agent.Options["provider"].(string); ok {
+			projConfig.Agent.Options["provider"] = provider
+		}
+
+		// Inherit mode
+		if mode, ok := sourceProj.Agent.Options["mode"].(string); ok {
+			projConfig.Agent.Options["mode"] = mode
+		}
+
+		// Use the source project's platform configs
+		projConfig.Platforms = sourceProj.Platforms
+	}
+
+	// Save to config file
+	if err := config.AddProject(projConfig); err != nil {
+		return nil, fmt.Errorf("save config: %w", err)
+	}
+
+	// Create agent
+	agent, err := core.CreateAgent(projConfig.Agent.Type, buildAgentOptions(cfg.DataDir, projConfig))
+	if err != nil {
+		return nil, fmt.Errorf("create agent: %w", err)
+	}
+
+	// Wire providers
+	providerWiring := wireAgentProviders(agent, projConfig.Agent)
+
+	// Create platforms
+	var platforms []core.Platform
+	for _, pc := range projConfig.Platforms {
+		opts := make(map[string]any, len(pc.Options)+2)
+		for k, v := range pc.Options {
+			opts[k] = v
+		}
+		opts["cc_data_dir"] = cfg.DataDir
+		opts["cc_project"] = projectName
+		p, err := core.CreatePlatform(pc.Type, opts)
+		if err != nil {
+			return nil, fmt.Errorf("create platform %s: %w", pc.Type, err)
+		}
+		platforms = append(platforms, p)
+	}
+
+	workDirStr, _ := projConfig.Agent.Options["work_dir"].(string)
+	projectState := core.NewProjectStateStore(projectStatePath(cfg.DataDir, projectName))
+	effectiveWorkDir := applyProjectStateOverride(projectName, agent, workDirStr, projectState)
+	startInitialRefreshIfReady(agent, providerWiring)
+	sessionFile := sessionStorePath(cfg.DataDir, projectName, effectiveWorkDir)
+
+	// Parse language
+	var lang core.Language
+	switch cfg.Language {
+	case "zh", "chinese":
+		lang = core.LangChinese
+	case "zh-TW", "zh_TW", "zhtw":
+		lang = core.LangTraditionalChinese
+	case "ja", "japanese":
+		lang = core.LangJapanese
+	case "es", "spanish":
+		lang = core.LangSpanish
+	case "en", "english":
+		lang = core.LangEnglish
+	default:
+		lang = core.LangAuto
+	}
+
+	engine := core.NewEngine(projectName, agent, platforms, sessionFile, lang)
+
+	// Apply essential settings from global config
+	engine.SetShowContextIndicator(true)
+	engine.SetAttachmentSendEnabled(cfg.AttachmentSend != "off")
+	engine.SetBaseWorkDir(workDirStr)
+	engine.SetProjectStateStore(projectState)
+	engine.SetAdminFrom(projConfig.AdminFrom)
+
+	// Wire custom commands
+	for _, c := range cfg.Commands {
+		engine.AddCommand(c.Name, c.Description, c.Prompt, c.Exec, c.WorkDir, "config")
+	}
+	engine.SetCommandSaveAddFunc(func(name, description, prompt, exec, workDir string) error {
+		return config.AddCommand(config.CommandConfig{Name: name, Description: description, Prompt: prompt, Exec: exec, WorkDir: workDir})
+	})
+	engine.SetCommandSaveDelFunc(func(name string) error {
+		return config.RemoveCommand(name)
+	})
+
+	// Wire aliases
+	for _, a := range cfg.Aliases {
+		engine.AddAlias(a.Name, a.Command)
+	}
+
+	// Wire display config
+	tm, tool, tmlen, toollen := config.EffectiveDisplay(cfg, &projConfig)
+	engine.SetDisplayConfig(core.DisplayCfg{
+		ThinkingMessages: tm,
+		ThinkingMaxLen:   tmlen,
+		ToolMaxLen:       toollen,
+		ToolMessages:     tool,
+	})
+
+	// Wire streaming preview
+	spcfg := core.DefaultStreamPreviewCfg()
+	if cfg.StreamPreview.Enabled != nil {
+		spcfg.Enabled = *cfg.StreamPreview.Enabled
+	}
+	if cfg.StreamPreview.IntervalMs != nil {
+		spcfg.IntervalMs = *cfg.StreamPreview.IntervalMs
+	}
+	if cfg.StreamPreview.MinDeltaChars != nil {
+		spcfg.MinDeltaChars = *cfg.StreamPreview.MinDeltaChars
+	}
+	if cfg.StreamPreview.MaxChars != nil {
+		spcfg.MaxChars = *cfg.StreamPreview.MaxChars
+	}
+	engine.SetStreamPreviewCfg(spcfg)
+
+	// Wire rate limiting
+	maxMsg, windowSecs := 20, 60
+	if cfg.RateLimit.MaxMessages != nil {
+		maxMsg = *cfg.RateLimit.MaxMessages
+	}
+	if cfg.RateLimit.WindowSecs != nil {
+		windowSecs = *cfg.RateLimit.WindowSecs
+	}
+	if maxMsg > 0 {
+		engine.SetRateLimitCfg(core.RateLimitCfg{MaxMessages: maxMsg, Window: time.Duration(windowSecs) * time.Second})
+	}
+
+	// Wire idle timeout
+	if cfg.IdleTimeoutMins != nil {
+		mins := *cfg.IdleTimeoutMins
+		if mins <= 0 {
+			engine.SetEventIdleTimeout(0)
+		} else {
+			engine.SetEventIdleTimeout(time.Duration(mins) * time.Minute)
+		}
+	}
+
+	// Wire config reload
+	engine.SetConfigReloadFunc(func() (*core.ConfigReloadResult, error) {
+		return reloadConfig(config.ConfigPath, projectName, engine)
+	})
+
+	return engine, nil
 }

@@ -549,6 +549,24 @@ const (
 	MsgWsCloneProgress         MsgKey = "ws_clone_progress"
 	MsgWsCloneSuccess          MsgKey = "ws_clone_success"
 	MsgWsCloneFailed           MsgKey = "ws_clone_failed"
+
+	// Project management messages
+	MsgProjectNotAvailable     MsgKey = "project_not_available"
+	MsgProjectCurrent          MsgKey = "project_current"
+	MsgProjectListTitle        MsgKey = "project_list_title"
+	MsgProjectSwitchHint       MsgKey = "project_switch_hint"
+	MsgProjectSwitchUsage      MsgKey = "project_switch_usage"
+	MsgProjectSwitched         MsgKey = "project_switched"
+	MsgProjectNotFound         MsgKey = "project_not_found"
+	MsgProjectAlreadyExists    MsgKey = "project_already_exists"
+	MsgProjectUsage            MsgKey = "project_usage"
+	MsgProjectAddUsage         MsgKey = "project_add_usage"
+	MsgProjectAdded            MsgKey = "project_added"
+	MsgProjectAddFailed        MsgKey = "project_add_failed"
+	MsgProjectRemoveUsage      MsgKey = "project_remove_usage"
+	MsgProjectRemoved          MsgKey = "project_removed"
+	MsgProjectCannotRemoveLast    MsgKey = "project_cannot_remove_last"
+	MsgProjectCannotRemoveCurrent MsgKey = "project_cannot_remove_current"
 )
 
 var messages = map[MsgKey]map[Language]string{
@@ -3691,6 +3709,120 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "❌ 克隆倉庫失敗: %v",
 		LangJapanese:           "❌ リポジトリのクローンに失敗しました: %v",
 		LangSpanish:            "❌ Error al clonar repositorio: %v",
+	},
+
+	// Project management messages
+	MsgProjectNotAvailable: {
+		LangEnglish:            "Project switching is not available",
+		LangChinese:            "项目切换功能不可用",
+		LangTraditionalChinese: "專案切換功能不可用",
+		LangJapanese:           "プロジェクト切り替えは利用できません",
+		LangSpanish:            "El cambio de proyecto no está disponible",
+	},
+	MsgProjectCurrent: {
+		LangEnglish:            "Current project: %s",
+		LangChinese:            "当前项目: %s",
+		LangTraditionalChinese: "目前專案: %s",
+		LangJapanese:           "現在のプロジェクト: %s",
+		LangSpanish:            "Proyecto actual: %s",
+	},
+	MsgProjectListTitle: {
+		LangEnglish:            "Available projects:",
+		LangChinese:            "可用项目:",
+		LangTraditionalChinese: "可用專案:",
+		LangJapanese:           "利用可能なプロジェクト:",
+		LangSpanish:            "Proyectos disponibles:",
+	},
+	MsgProjectSwitchHint: {
+		LangEnglish:            "Use /project switch <name> to switch",
+		LangChinese:            "使用 /project switch <名称> 切换项目",
+		LangTraditionalChinese: "使用 /project switch <名稱> 切換專案",
+		LangJapanese:           "/project switch <名前> で切り替え",
+		LangSpanish:            "Usa /project switch <nombre> para cambiar",
+	},
+	MsgProjectSwitchUsage: {
+		LangEnglish:            "Usage: /project switch <name>",
+		LangChinese:            "用法: /project switch <项目名>",
+		LangTraditionalChinese: "用法: /project switch <專案名>",
+		LangJapanese:           "使い方: /project switch <名前>",
+		LangSpanish:            "Uso: /project switch <nombre>",
+	},
+	MsgProjectSwitched: {
+		LangEnglish:            "✅ Switched to project: %s",
+		LangChinese:            "✅ 已切换到项目: %s",
+		LangTraditionalChinese: "✅ 已切換到專案: %s",
+		LangJapanese:           "✅ プロジェクトを切り替え: %s",
+		LangSpanish:            "✅ Proyecto cambiado a: %s",
+	},
+	MsgProjectNotFound: {
+		LangEnglish:            "Project %q not found",
+		LangChinese:            "未找到项目 %q",
+		LangTraditionalChinese: "未找到專案 %q",
+		LangJapanese:           "プロジェクト %q が見つかりません",
+		LangSpanish:            "Proyecto %q no encontrado",
+	},
+	MsgProjectAlreadyExists: {
+		LangEnglish:            "Project %q already exists",
+		LangChinese:            "项目 %q 已存在",
+		LangTraditionalChinese: "專案 %q 已存在",
+		LangJapanese:           "プロジェクト %q は既に存在します",
+		LangSpanish:            "El proyecto %q ya existe",
+	},
+	MsgProjectUsage: {
+		LangEnglish:            "Usage: /project [list|switch|add|remove]",
+		LangChinese:            "用法: /project [list|switch|add|remove]",
+		LangTraditionalChinese: "用法: /project [list|switch|add|remove]",
+		LangJapanese:           "使い方: /project [list|switch|add|remove]",
+		LangSpanish:            "Uso: /project [list|switch|add|remove]",
+	},
+	MsgProjectAddUsage: {
+		LangEnglish:            "Usage: /project add <name> <work_dir> [agent_type]",
+		LangChinese:            "用法: /project add <项目名> <工作目录> [agent类型]",
+		LangTraditionalChinese: "用法: /project add <專案名> <工作目錄> [agent類型]",
+		LangJapanese:           "使い方: /project add <名前> <作業ディレクトリ> [エージェントタイプ]",
+		LangSpanish:            "Uso: /project add <nombre> <dir_trabajo> [tipo_agente]",
+	},
+	MsgProjectAdded: {
+		LangEnglish:            "✅ Project %q added and switched (work_dir: %s)",
+		LangChinese:            "✅ 项目 %q 已添加并切换 (工作目录: %s)",
+		LangTraditionalChinese: "✅ 專案 %q 已新增並切換 (工作目錄: %s)",
+		LangJapanese:           "✅ プロジェクト %q を追加し、切り替えました (作業ディレクトリ: %s)",
+		LangSpanish:            "✅ Proyecto %q añadido y cambiado (dir_trabajo: %s)",
+	},
+	MsgProjectAddFailed: {
+		LangEnglish:            "❌ Failed to add project %q: %s",
+		LangChinese:            "❌ 添加项目 %q 失败: %s",
+		LangTraditionalChinese: "❌ 新增專案 %q 失敗: %s",
+		LangJapanese:           "❌ プロジェクト %q の追加に失敗しました: %s",
+		LangSpanish:            "❌ Error al añadir proyecto %q: %s",
+	},
+	MsgProjectRemoveUsage: {
+		LangEnglish:            "Usage: /project remove <name>",
+		LangChinese:            "用法: /project remove <项目名>",
+		LangTraditionalChinese: "用法: /project remove <專案名>",
+		LangJapanese:           "使い方: /project remove <名前>",
+		LangSpanish:            "Uso: /project remove <nombre>",
+	},
+	MsgProjectRemoved: {
+		LangEnglish:            "✅ Project %q removed",
+		LangChinese:            "✅ 项目 %q 已移除",
+		LangTraditionalChinese: "✅ 專案 %q 已移除",
+		LangJapanese:           "✅ プロジェクト %q を削除しました",
+		LangSpanish:            "✅ Proyecto %q eliminado",
+	},
+	MsgProjectCannotRemoveLast: {
+		LangEnglish:            "Cannot remove the last project",
+		LangChinese:            "无法移除最后一个项目",
+		LangTraditionalChinese: "無法移除最後一個專案",
+		LangJapanese:           "最後のプロジェクトは削除できません",
+		LangSpanish:            "No se puede eliminar el último proyecto",
+	},
+	MsgProjectCannotRemoveCurrent: {
+		LangEnglish:            "Cannot remove the current project %q — switch to another project first with /project switch",
+		LangChinese:            "无法删除当前项目 %q — 请先使用 /project switch 切换到其他项目",
+		LangTraditionalChinese: "無法刪除目前專案 %q — 請先使用 /project switch 切換到其他專案",
+		LangJapanese:           "現在のプロジェクト %q は削除できません — 先に /project switch で別のプロジェクトに切り替えてください",
+		LangSpanish:            "No se puede eliminar el proyecto actual %q — cambie a otro proyecto primero con /project switch",
 	},
 }
 
