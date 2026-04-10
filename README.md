@@ -305,6 +305,40 @@ reset_on_idle_mins = 60
 ```
 
 
+### 🗂️ Project Management
+
+Switch between projects at runtime — no config file edits, no restart required.
+
+```
+/project                          Show current project and list all projects
+/project list                     List all available projects
+/project switch <name>            Switch current session to another project
+/project add <name> <work_dir>    Add a new project (inherits current project's settings)
+/project remove <name>            Remove a project
+```
+
+**Permissions:**
+
+| Command | Requires `admin_from`? |
+|---------|------------------------|
+| `/project list` | No — open to all users |
+| `/project switch` | No — open to all users |
+| `/project add` | **Yes** |
+| `/project remove` | **Yes** |
+
+To enable privileged project commands, set `admin_from` in your project config:
+
+```toml
+[[projects]]
+name = "my-project"
+admin_from = "*"          # allow all users, or set specific IDs e.g. "user1,user2"
+```
+
+When `/project add` succeeds, the new project inherits the source project's `admin_from`, API providers, mode, and platform config. The session automatically switches to the new project.
+
+You cannot remove the project your current session is bound to — use `/project switch` first.
+
+
 ### ⏰ Scheduled Tasks
 
 ```bash
