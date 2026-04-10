@@ -3974,6 +3974,12 @@ func (e *Engine) dirApply(agent Agent, sessions *SessionManager, interactiveKey,
 			if baseDir == "" {
 				baseDir, _ = os.Getwd()
 			}
+			if absBase, err := filepath.Abs(baseDir); err == nil {
+				baseDir = absBase
+			}
+			if resolvedBase, err := filepath.EvalSymlinks(baseDir); err == nil {
+				baseDir = resolvedBase
+			}
 			newDir = filepath.Join(baseDir, newDir)
 		}
 	}

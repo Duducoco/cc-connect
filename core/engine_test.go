@@ -3310,6 +3310,41 @@ func TestCmdDir_SwitchesDirectoryAndResetsSession(t *testing.T) {
 	}
 }
 
+func TestCmdDir_SwitchesToOutsideDirectoryFromRelativePath(t *testing.T) {
+	p := &stubPlatformEngine{n: "plain"}
+	rootDir := t.TempDir()
+	currentRealDir := filepath.Join(rootDir, "workspace", "current")
+	outsideRealDir := filepath.Join(rootDir, "workspace", "outside")
+	if err := os.MkdirAll(currentRealDir, 0o755); err != nil {
+		t.Fatalf("mkdir current dir: %v", err)
+	}
+	if err := os.MkdirAll(outsideRealDir, 0o755); err != nil {
+		t.Fatalf("mkdir outside dir: %v", err)
+	}
+
+	linkBase := filepath.Join(rootDir, "links")
+	if err := os.MkdirAll(linkBase, 0o755); err != nil {
+		t.Fatalf("mkdir link base: %v", err)
+	}
+	currentLinkDir := filepath.Join(linkBase, "current")
+	if err := os.Symlink(currentRealDir, currentLinkDir); err != nil {
+		t.Fatalf("symlink current dir: %v", err)
+	}
+
+	agent := &stubWorkDirAgent{workDir: currentLinkDir}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+	msg := &Message{SessionKey: "test:user1", ReplyCtx: "ctx"}
+
+	e.cmdDir(p, msg, []string{"../outside"})
+
+	if agent.workDir != outsideRealDir {
+		t.Fatalf("workDir = %q, want %q", agent.workDir, outsideRealDir)
+	}
+	if len(p.sent) != 1 || !strings.Contains(p.sent[0], outsideRealDir) {
+		t.Fatalf("sent = %v, want directory changed message containing %q", p.sent, outsideRealDir)
+	}
+}
+
 func TestCmdDir_RejectsMissingDirectory(t *testing.T) {
 	p := &stubPlatformEngine{n: "plain"}
 	tempDir := t.TempDir()
