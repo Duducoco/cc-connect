@@ -240,7 +240,9 @@ func (r *EngineRouter) DestroyEngine(name string) error {
 		cb(name)
 	}
 
-	e.Stop()
+	if err := e.Stop(); err != nil {
+		slog.Warn("engine_router: error stopping engine", "project", name, "error", err)
+	}
 
 	// Remove from config file
 	if removeFunc != nil {
